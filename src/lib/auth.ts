@@ -63,6 +63,18 @@ export async function authenticateBrowser(
   workspaceName?: string,
   profile?: string
 ): Promise<AuthResult> {
+  // Gate the host before any credential is paired with it. `login-auto` and
+  // `parse-curl` both constrain the workspace to a slack.com host; without the
+  // same check here, `login-browser --workspace-url https://evil.example`
+  // would POST the `d` cookie and xoxc token to an attacker's host and persist
+  // that host for every later request.
+  if (!isSlackWorkspaceUrl(workspaceUrl)) {
+    throw new Error(
+      `Refusing to use a non-Slack workspace URL: ${workspaceUrl}\n` +
+      '   --workspace-url must be an https URL on a slack.com host (e.g. https://myteam.slack.com).'
+    );
+  }
+
   // Extract workspace name from URL if not provided
   const defaultName = extractSlackWorkspaceName(workspaceUrl);
 

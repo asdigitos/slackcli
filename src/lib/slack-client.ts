@@ -4,6 +4,28 @@ import { readFile, stat } from 'node:fs/promises';
 import type { WorkspaceConfig, SlackAuthTestResponse } from '../types/index.ts';
 import { parseMrkdwn } from './mrkdwn.ts';
 
+/**
+ * Is this an https URL on a slack.com host?
+ *
+ * Gate for any request that carries a credential (Bearer token or the `d`
+ * session cookie) to a URL that originated in a server response. `url_private`
+ * on a Slack *remote file* (`files.remote.add`) is an arbitrary external URL,
+ * so downloading one with auth headers attached would POST/GET the caller's
+ * live token to an attacker-chosen host. Anchored on a dot boundary — a plain
+ * `endsWith('slack.com')` would accept `notslack.com` and `slack.com.evil.net`.
+ */
+export function isSlackHostedUrl(candidate: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:') return false;
+  const host = parsed.hostname.toLowerCase();
+  return host === 'slack.com' || host.endsWith('.slack.com');
+}
+
 interface ExternalUploadUrlResponse {
   upload_url?: string;
   file_id?: string;
@@ -49,6 +71,15 @@ export class SlackClient {
   private async browserRequest(method: string, params: Record<string, any>): Promise<any> {
     if (this.config.auth_type !== 'browser') {
       throw new Error('Invalid auth type');
+    }
+
+    // Request-time gate, not just login-time: a workspace_url persisted by an
+    // older build (which did not validate it) would otherwise still receive
+    // the session cookie on every call.
+    if (!isSlackHostedUrl(this.config.workspace_url)) {
+      throw new Error(
+        `Refusing to send credentials to a non-Slack workspace URL: ${this.config.workspace_url}`
+      );
     }
 
     const url = `${this.config.workspace_url}/api/${method}`;
@@ -389,6 +420,17 @@ export class SlackClient {
 
   // Download file content with auth, size guard, and auth page detection
   async downloadFile(url: string, maxBytes: number = 10 * 1024 * 1024): Promise<string> {
+    // Refuse to attach a credential to a host that is not Slack's. The URL here
+    // comes from a `files.info` response, and a remote file's `url_private` can
+    // point anywhere — without this gate, reading such a file would leak the
+    // Bearer token or `d` session cookie to an attacker-controlled origin.
+    //
+    // Redirects are followed manually so the SAME gate applies to every hop.
+    // With `redirect: 'follow'` the credential headers are validated only
+    // against the first URL, and whether the runtime re-sends Cookie or
+    // Authorization on a cross-origin redirect is implementation-defined —
+    // an open redirect on a slack.com host must not decide where a live
+    // session cookie travels.
     const headers: Record<string, string> = {};
 
     if (this.config.auth_type === 'standard') {
@@ -399,7 +441,31 @@ export class SlackClient {
       headers['Origin'] = 'https://app.slack.com';
     }
 
-    const response = await fetch(url, { headers });
+    const MAX_REDIRECTS = 5;
+    let currentUrl = url;
+    let response: Response;
+
+    for (let hop = 0; ; hop++) {
+      if (!isSlackHostedUrl(currentUrl)) {
+        throw new Error(`Refusing to send credentials to a non-Slack host: ${currentUrl}`);
+      }
+
+      response = await fetch(currentUrl, { headers, redirect: 'manual' });
+
+      if (response.status < 300 || response.status >= 400) break;
+
+      const location = response.headers.get('location');
+      if (!location) {
+        throw new Error(`Download failed: HTTP ${response.status} redirect without Location`);
+      }
+      if (hop >= MAX_REDIRECTS) {
+        throw new Error('Download failed: too many redirects');
+      }
+      await response.body?.cancel().catch(() => {});
+      // Relative Locations resolve against the current (already validated)
+      // URL; absolute ones are re-gated at the top of the next iteration.
+      currentUrl = new URL(location, currentUrl).toString();
+    }
 
     if (!response.ok) {
       throw new Error(`Download failed: HTTP ${response.status}`);

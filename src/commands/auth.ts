@@ -366,13 +366,17 @@ export function createAuthCommand(): Command {
             process.exit(1);
           }
         } else {
+          // Deliberately not echoing the full tokens here: they would land in
+          // terminal scrollback and shell history. Re-run with --login to
+          // authenticate directly without the secrets ever being printed.
           console.log(chalk.bold('To login with these tokens, run:\n'));
           console.log(chalk.cyan('  slackcli auth parse-curl --login'));
-          console.log(chalk.gray('\nOr manually:\n'));
-          console.log(`  slackcli auth login-browser \\`);
-          console.log(`    --xoxd="${parsed.xoxd}" \\`);
-          console.log(`    --xoxc="${parsed.xoxc}" \\`);
-          console.log(`    --workspace-url="${parsed.workspaceUrl}"\n`);
+          console.log(
+            chalk.dim(
+              '\n(The full tokens are intentionally not printed. --login uses the\n' +
+              ' extracted values directly, keeping them out of your shell history.)\n'
+            )
+          );
         }
       } catch (err: any) {
         error('Failed to parse cURL command', err.message);
