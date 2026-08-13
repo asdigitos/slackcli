@@ -38,8 +38,12 @@ export function sanitizeForTerminal(value: string | null | undefined): string {
  * escape character, so single-line contexts must additionally fold newlines
  * (and tabs, which let a value jump columns) into spaces.
  *
- * `formatMessage`'s body and `formatCanvasContent` are exempt: both are
- * genuinely multi-line and re-indent every line they emit.
+ * Two callers are exempt, for different reasons. `formatMessage`'s body is
+ * re-indented line by line, so an embedded newline cannot reach column 0
+ * where the header rows live. `formatCanvasContent` renders a document body
+ * and does NOT re-indent - it is exempt because a canvas legitimately is
+ * multi-line prose, and it is framed by rules above and below so the reader
+ * can see where CLI output resumes.
  */
 export function sanitizeInline(value: string | null | undefined): string {
   return sanitizeForTerminal(value).replace(/[\t\n]+/g, ' ');
@@ -327,7 +331,7 @@ export function formatSearchMessages(
   matches: SearchMatch[],
   total: number,
 ): string {
-  let output = chalk.bold(`🔍 Search Results for "${query}" (${total} total)\n\n`);
+  let output = chalk.bold(`🔍 Search Results for "${sanitizeInline(query)}" (${total} total)\n\n`);
 
   matches.forEach((match, idx) => {
     const userName = sanitizeInline(match.username || match.user) || 'Unknown';
@@ -354,7 +358,7 @@ export function formatChannelSearchResults(
   channels: ChannelSearchResult[],
   total: number,
 ): string {
-  let output = chalk.bold(`📋 Channels matching "${query}" (${total} total)\n\n`);
+  let output = chalk.bold(`📋 Channels matching "${sanitizeInline(query)}" (${total} total)\n\n`);
 
   channels.forEach((ch, idx) => {
     const memberCount = ch.member_count || ch.num_members;
@@ -376,7 +380,7 @@ export function formatPeopleSearchResults(
   people: PeopleSearchResult[],
   total: number,
 ): string {
-  let output = chalk.bold(`👥 People matching "${query}" (${total} total)\n\n`);
+  let output = chalk.bold(`👥 People matching "${sanitizeInline(query)}" (${total} total)\n\n`);
 
   people.forEach((user, idx) => {
     const profile = user.profile || {};
@@ -458,7 +462,10 @@ export function formatCanvasContent(canvas: SlackCanvas, markdown: string): stri
 
   // The markdown body derives from canvas HTML authored by other workspace
   // members; sanitized like every other API-derived string.
-  return `${header}\n${chalk.dim('─'.repeat(60))}\n\n${sanitizeForTerminal(markdown)}`;
+  // Closing rule matters: without it a forged line at the very end of the
+  // document is indistinguishable from CLI output resuming.
+  const rule = chalk.dim('─'.repeat(60));
+  return `${header}\n${rule}\n\n${sanitizeForTerminal(markdown)}\n${rule}`;
 }
 
 // Format file size to human-readable string

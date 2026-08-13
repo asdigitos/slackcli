@@ -5,7 +5,6 @@
 import { spawn } from 'child_process';
 import { childEnv } from './child-env.ts';
 
-
 export interface ClipboardResult {
   success: boolean;
   content?: string;

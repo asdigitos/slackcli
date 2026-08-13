@@ -190,6 +190,7 @@ export function sweepProfileHelpers(profileDir: string): void {
   try {
     spawnSync('pkill', ['-9', '-f', `user-data-dir=${escapeEre(profileDir)}`], {
       stdio: 'ignore',
+      env: childEnv(),
     });
   } catch {
     // Best effort; the browser's own shutdown is the primary path.
@@ -346,7 +347,7 @@ export async function launchBrowser(
     if (pid === undefined) return;
     if (process.platform === 'win32') {
       try {
-        spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
+        spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', env: childEnv() });
       } catch {
         // Nothing further to try.
       }

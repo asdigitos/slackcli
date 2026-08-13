@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import ora from 'ora';
 import { getAuthenticatedClient } from '../lib/auth.ts';
-import { error, formatCanvasList, formatCanvasContent, sanitizeForTerminal, writeJson } from '../lib/formatter.ts';
+import { error, formatCanvasList, formatCanvasContent, sanitizeForTerminal, sanitizeInline, writeJson } from '../lib/formatter.ts';
 import { canvasHtmlToMarkdown, isAuthPage } from '../lib/canvas-parser.ts';
 import type { SlackCanvas, SlackUser } from '../types/index.ts';
 
@@ -142,7 +142,7 @@ export function createCanvasCommand(): Command {
         // characters — the HTML is authored by other workspace members, and a
         // raw ESC in it drives the terminal, not the markup.
         if (options.raw) {
-          spinner.succeed(`Canvas: ${sanitizeForTerminal(file.title || file.name) || fileId}`);
+          spinner.succeed(`Canvas: ${sanitizeInline(file.title || file.name) || fileId}`);
           console.log(sanitizeForTerminal(html));
           return;
         }
@@ -163,7 +163,7 @@ export function createCanvasCommand(): Command {
         if (userIds.size > 0 || channelIds.size > 0) {
           spinner.text = 'Resolving mentions...';
         } else {
-          spinner.succeed(`Canvas: ${sanitizeForTerminal(file.title || file.name) || fileId}`);
+          spinner.succeed(`Canvas: ${sanitizeInline(file.title || file.name) || fileId}`);
         }
 
         const users = new Map<string, SlackUser>();
@@ -174,11 +174,11 @@ export function createCanvasCommand(): Command {
           });
           // Replace user mentions with display names
           for (const [id, user] of users) {
-            const displayName = user.real_name || user.name || id;
-            markdown = markdown.replace(
-              new RegExp(`<@${id}>`, 'g'),
-              `@${displayName}`,
-            );
+            const displayName = sanitizeInline(user.real_name || user.name) || id;
+            // Function replacement, not a string: `$&`, `$\``, `$'` are special
+            // in a replacement string, so a display name containing them would
+            // splice unrelated document content into the output.
+            markdown = markdown.replace(new RegExp(`<@${id}>`, 'g'), () => `@${displayName}`);
           }
         }
 
@@ -187,9 +187,10 @@ export function createCanvasCommand(): Command {
             try {
               const info = await client.getConversationInfo(channelId);
               if (info.channel?.name) {
+                const channelName = sanitizeInline(info.channel.name);
                 markdown = markdown.replace(
                   new RegExp(`<#${channelId}>`, 'g'),
-                  `#${info.channel.name}`,
+                  () => `#${channelName}`,
                 );
               }
             } catch {
@@ -199,7 +200,7 @@ export function createCanvasCommand(): Command {
         }
 
         if (userIds.size > 0 || channelIds.size > 0) {
-          spinner.succeed(`Canvas: ${sanitizeForTerminal(file.title || file.name) || fileId}`);
+          spinner.succeed(`Canvas: ${sanitizeInline(file.title || file.name) || fileId}`);
         }
 
         if (options.json) {

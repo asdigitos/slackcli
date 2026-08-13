@@ -9,10 +9,17 @@
  * browser launched by `login-auto`. None of them need it, and the browser in
  * particular exposes its environment to extensions and crash reporters.
  */
+const SECRET_ENV_VARS = ['SLACKCLI_TOKEN', 'SLACKCLI_XOXD', 'SLACKCLI_XOXC'];
+
 export function childEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  delete env.SLACKCLI_TOKEN;
-  delete env.SLACKCLI_XOXD;
-  delete env.SLACKCLI_XOXC;
+  // Matched case-insensitively, not by `delete env.SLACKCLI_TOKEN`. Windows
+  // environment variables are case-insensitive and `process.env` honours that
+  // on read — so `set slackcli_token=…` authenticates fine — but spreading
+  // into a plain object loses it, and an exact-case delete would then miss the
+  // very key that just worked.
+  for (const key of Object.keys(env)) {
+    if (SECRET_ENV_VARS.includes(key.toUpperCase())) delete env[key];
+  }
   return env;
 }
