@@ -94,7 +94,9 @@ SlackCLI supports two authentication methods:
 Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps) and obtain a bot token (xoxb-*) or user token (xoxp-*).
 
 ```bash
-slackcli auth login --token=xoxb-YOUR-TOKEN --workspace-name="My Team"
+# The token comes from an environment variable so it never appears in
+# `ps` output or your shell history (--token is still supported).
+SLACKCLI_TOKEN=xoxb-YOUR-TOKEN slackcli auth login --workspace-name="My Team"
 ```
 
 ### 2. Automatic Browser Login (Easiest)
@@ -136,10 +138,10 @@ Extract tokens from your browser session by hand. No Slack app creation required
 slackcli auth extract-tokens
 
 # Step 2: Login with extracted tokens
-slackcli auth login-browser \
-  --xoxd=xoxd-YOUR-TOKEN \
-  --xoxc=xoxc-YOUR-TOKEN \
-  --workspace-url=https://yourteam.slack.com
+# Tokens come from environment variables so they never appear in `ps`
+# output or your shell history (--xoxd/--xoxc are still supported).
+SLACKCLI_XOXD=xoxd-YOUR-TOKEN SLACKCLI_XOXC=xoxc-YOUR-TOKEN \
+  slackcli auth login-browser --workspace-url=https://yourteam.slack.com
 ```
 
 **How to Extract Browser Tokens:**
@@ -213,14 +215,14 @@ and drafts alongside a bot token for unattended jobs — give each login a
 
 ```bash
 # A user identity (browser auth)
-slackcli auth login-browser \
-  --xoxd=xoxd-... --xoxc=xoxc-... \
+SLACKCLI_XOXD=xoxd-... SLACKCLI_XOXC=xoxc-... \
+  slackcli auth login-browser \
   --workspace-url=https://example.slack.com \
   --profile=rafael
 
 # A bot identity in the same workspace
-slackcli auth login \
-  --token=xoxb-... \
+SLACKCLI_TOKEN=xoxb-... \
+  slackcli auth login \
   --workspace-name=example \
   --profile=automation-bot
 ```

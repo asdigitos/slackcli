@@ -23,16 +23,29 @@ export function createAuthCommand(): Command {
   // Login with standard token
   auth
     .command('login')
-    .description('Login with standard Slack app token (xoxb-* or xoxp-*)')
-    .requiredOption('--token <token>', 'Slack bot or user token')
+    .description(
+      'Login with standard Slack app token (xoxb-* or xoxp-*). ' +
+      'Prefer the SLACKCLI_TOKEN environment variable over --token: ' +
+      'command-line arguments are visible in `ps` and land in shell history.'
+    )
+    .option('--token <token>', 'Slack bot or user token; prefer SLACKCLI_TOKEN')
     .requiredOption('--workspace-name <name>', 'Workspace name for identification')
     .option('--profile <name>', 'Store under a named profile (keeps multiple identities for one workspace)')
     .action(async (options) => {
+      // Env fallback keeps the secret out of argv; the flag stays supported
+      // for backward compatibility.
+      const token = options.token || process.env.SLACKCLI_TOKEN;
+      if (!token) {
+        error('Missing token: provide SLACKCLI_TOKEN (or --token).');
+        console.log(chalk.dim('   Tip: SLACKCLI_TOKEN=xoxb-… slackcli auth login --workspace-name="My Team"'));
+        process.exit(1);
+      }
+
       const spinner = ora('Authenticating...').start();
 
       try {
         const { config, profileKey } = await authenticateStandard(
-          options.token,
+          token,
           options.workspaceName,
           options.profile
         );
@@ -54,19 +67,33 @@ export function createAuthCommand(): Command {
   // Login with browser tokens
   auth
     .command('login-browser')
-    .description('Login with browser session tokens (xoxd-* and xoxc-*)')
-    .requiredOption('--xoxd <token>', 'Browser session token (xoxd-*)')
-    .requiredOption('--xoxc <token>', 'Browser API token (xoxc-*)')
+    .description(
+      'Login with browser session tokens (xoxd-* and xoxc-*). ' +
+      'Prefer the SLACKCLI_XOXD / SLACKCLI_XOXC environment variables over the ' +
+      'flags: command-line arguments are visible in `ps` and land in shell history.'
+    )
+    .option('--xoxd <token>', 'Browser session token (xoxd-*); prefer SLACKCLI_XOXD')
+    .option('--xoxc <token>', 'Browser API token (xoxc-*); prefer SLACKCLI_XOXC')
     .requiredOption('--workspace-url <url>', 'Workspace URL (e.g., https://myteam.slack.com)')
     .option('--workspace-name <name>', 'Optional workspace name for identification')
     .option('--profile <name>', 'Store under a named profile (keeps multiple identities for one workspace)')
     .action(async (options) => {
+      // Env fallback keeps the secrets out of argv; the flags stay supported
+      // for backward compatibility.
+      const xoxd = options.xoxd || process.env.SLACKCLI_XOXD;
+      const xoxc = options.xoxc || process.env.SLACKCLI_XOXC;
+      if (!xoxd || !xoxc) {
+        error('Missing tokens: provide SLACKCLI_XOXD and SLACKCLI_XOXC (or --xoxd/--xoxc).');
+        console.log(chalk.dim('   Tip: SLACKCLI_XOXD=xoxd-… SLACKCLI_XOXC=xoxc-… slackcli auth login-browser --workspace-url=…'));
+        process.exit(1);
+      }
+
       const spinner = ora('Authenticating...').start();
 
       try {
         const { config, profileKey } = await authenticateBrowser(
-          options.xoxd,
-          options.xoxc,
+          xoxd,
+          xoxc,
           options.workspaceUrl,
           options.workspaceName,
           options.profile
@@ -264,12 +291,11 @@ export function createAuthCommand(): Command {
       console.log('\n📝 Extract the tokens:');
       console.log('   - xoxd token: In the "Cookie" header, look for d=xoxd-...');
       console.log('   - xoxc token: In the request payload, look for "token":"xoxc-..."');
-      console.log('\n✨ Use the tokens:');
-      console.log('   slackcli auth login-browser \\');
-      console.log('     --xoxd=xoxd-... \\');
-      console.log('     --xoxc=xoxc-... \\');
-      console.log('     --workspace-url=https://yourteam.slack.com\n');
-      console.log('\n💡 Or use the easy way:');
+      console.log('\n✨ Use the tokens (via environment variables — tokens passed as');
+      console.log('   --flags are visible in `ps` and land in your shell history):');
+      console.log('   SLACKCLI_XOXD=xoxd-... SLACKCLI_XOXC=xoxc-... \\');
+      console.log('     slackcli auth login-browser --workspace-url=https://yourteam.slack.com\n');
+      console.log('\n💡 Or skip manual extraction entirely:');
       console.log('   Right-click on any Slack API request → Copy → Copy as cURL');
       console.log('   Then run: slackcli auth parse-curl --login');
       console.log('   (Interactive mode - just paste and press Enter twice)\n');

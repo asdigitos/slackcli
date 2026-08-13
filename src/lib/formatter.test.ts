@@ -8,6 +8,7 @@ import {
   formatPaginationHint,
   formatFileSize,
   formatMessage,
+  sanitizeForTerminal,
   writeJson,
 } from './formatter.ts';
 import type {
@@ -19,6 +20,61 @@ import type {
   SlackUser,
   SlackMessage,
 } from '../types/index.ts';
+
+describe('sanitizeForTerminal', () => {
+  it('strips ESC sequences that could rewrite terminal output', () => {
+    expect(sanitizeForTerminal('safe\x1b[2K\x1b[1A forged')).toBe('safe[2K[1A forged');
+    // OSC-8 hyperlink: visible text differing from the target.
+    expect(sanitizeForTerminal('\x1b]8;;https://evil.example\x07click me\x1b]8;;\x07'))
+      .toBe(']8;;https://evil.exampleclick me]8;;');
+  });
+
+  it('strips carriage returns, DEL, and C1 controls (single-byte CSI)', () => {
+    expect(sanitizeForTerminal('overwrite\rme')).toBe('overwriteme');
+    expect(sanitizeForTerminal('del\x7fete')).toBe('delete');
+    expect(sanitizeForTerminal('csi\u009b31m')).toBe('csi31m');
+  });
+
+  it('keeps newlines, tabs, and everything printable', () => {
+    expect(sanitizeForTerminal('line1\nline2\ttabbed 日本語 émoji 🎉'))
+      .toBe('line1\nline2\ttabbed 日本語 émoji 🎉');
+  });
+
+  it('returns an empty string for null/undefined/empty', () => {
+    expect(sanitizeForTerminal(undefined)).toBe('');
+    expect(sanitizeForTerminal(null)).toBe('');
+    expect(sanitizeForTerminal('')).toBe('');
+  });
+});
+
+describe('formatMessage sanitization', () => {
+  it('strips escape sequences from message text and user names', () => {
+    const users = new Map<string, SlackUser>([
+      ['U1', { id: 'U1', name: 'mallory', real_name: 'Mal\x1b[31mory' } as SlackUser],
+    ]);
+    const msg: SlackMessage = {
+      type: 'message',
+      text: 'hello\x1b[2K\x1b[1A✅ Verified by admin',
+      ts: '1700000000.000100',
+      user: 'U1',
+    };
+
+    const output = formatMessage(msg, users);
+    expect(output).not.toContain('\x1b[2K');
+    expect(output).not.toContain('\x1b[31m');
+    expect(output).toContain('✅ Verified by admin'); // content kept, control bytes gone
+  });
+
+  it('does not crash on a message without text', () => {
+    const msg = {
+      type: 'message',
+      ts: '1700000000.000100',
+      user: 'U1',
+    } as SlackMessage;
+
+    expect(() => formatMessage(msg, new Map())).not.toThrow();
+  });
+});
 
 describe('formatSavedItems', () => {
   it('renders message items with user info', () => {

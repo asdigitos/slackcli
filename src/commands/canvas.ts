@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import ora from 'ora';
 import { getAuthenticatedClient } from '../lib/auth.ts';
-import { error, formatCanvasList, formatCanvasContent, writeJson } from '../lib/formatter.ts';
+import { error, formatCanvasList, formatCanvasContent, sanitizeForTerminal, writeJson } from '../lib/formatter.ts';
 import { canvasHtmlToMarkdown, isAuthPage } from '../lib/canvas-parser.ts';
 import type { SlackCanvas, SlackUser } from '../types/index.ts';
 
@@ -138,10 +138,12 @@ export function createCanvasCommand(): Command {
           process.exit(1);
         }
 
-        // Raw mode: output HTML directly
+        // Raw mode: output HTML directly. Still stripped of terminal control
+        // characters — the HTML is authored by other workspace members, and a
+        // raw ESC in it drives the terminal, not the markup.
         if (options.raw) {
-          spinner.succeed(`Canvas: ${file.title || file.name || fileId}`);
-          console.log(html);
+          spinner.succeed(`Canvas: ${sanitizeForTerminal(file.title || file.name) || fileId}`);
+          console.log(sanitizeForTerminal(html));
           return;
         }
 
@@ -161,7 +163,7 @@ export function createCanvasCommand(): Command {
         if (userIds.size > 0 || channelIds.size > 0) {
           spinner.text = 'Resolving mentions...';
         } else {
-          spinner.succeed(`Canvas: ${file.title || file.name || fileId}`);
+          spinner.succeed(`Canvas: ${sanitizeForTerminal(file.title || file.name) || fileId}`);
         }
 
         const users = new Map<string, SlackUser>();
@@ -197,7 +199,7 @@ export function createCanvasCommand(): Command {
         }
 
         if (userIds.size > 0 || channelIds.size > 0) {
-          spinner.succeed(`Canvas: ${file.title || file.name || fileId}`);
+          spinner.succeed(`Canvas: ${sanitizeForTerminal(file.title || file.name) || fileId}`);
         }
 
         if (options.json) {

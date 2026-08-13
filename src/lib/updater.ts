@@ -1,6 +1,7 @@
 import { writeFile, chmod, rename, unlink } from 'fs/promises';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
-import { tmpdir, homedir } from 'os';
+import { createHash } from 'crypto';
+import { homedir } from 'os';
 import { join } from 'path';
 import chalk from 'chalk';
 import { info, success, error as logError } from './formatter.ts';
@@ -67,6 +68,52 @@ export function isNewerVersion(latest: string, current: string): boolean {
   }
 
   return false;
+}
+
+/**
+ * Hosts a release asset may legitimately download from.
+ *
+ * `browser_download_url` is taken from GitHub's release JSON; gating its host
+ * means a tampered field (or a compromised intermediary rewriting the JSON)
+ * cannot point the updater at an arbitrary origin. GitHub serves release
+ * assets from github.com with a redirect to its objects CDN.
+ */
+const RELEASE_DOWNLOAD_HOSTS = new Set([
+  'github.com',
+  'objects.githubusercontent.com',
+  'release-assets.githubusercontent.com',
+]);
+
+export function isTrustedReleaseUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === 'https:' &&
+      RELEASE_DOWNLOAD_HOSTS.has(parsed.hostname.toLowerCase())
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Parse `sha256sum` output: one `<64-hex>  <filename>` pair per line
+ * (a `*` before the filename marks binary mode and is equivalent).
+ * Returns filename -> lowercase hex digest.
+ */
+export function parseChecksums(text: string): Map<string, string> {
+  const checksums = new Map<string, string>();
+  for (const line of text.split('\n')) {
+    const match = line.trim().match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/);
+    if (match) {
+      checksums.set(match[2].trim(), match[1].toLowerCase());
+    }
+  }
+  return checksums;
+}
+
+export function sha256Hex(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 // Get platform-specific binary name
@@ -142,6 +189,32 @@ export async function performUpdate(): Promise<void> {
     throw new Error(`Binary not found for ${binaryName}`);
   }
 
+  // The release workflow publishes checksums.txt alongside the binaries.
+  // Refusing to update without it means a release asset can never be swapped
+  // in unverified — the downloaded bytes must match the digest published in
+  // the same release.
+  const checksumAsset = release.assets.find(a => a.name === 'checksums.txt');
+  if (!checksumAsset) {
+    throw new Error(
+      'Release has no checksums.txt — refusing to install an unverifiable binary'
+    );
+  }
+
+  for (const url of [asset.browser_download_url, checksumAsset.browser_download_url]) {
+    if (!isTrustedReleaseUrl(url)) {
+      throw new Error(`Refusing to download a release asset from: ${url}`);
+    }
+  }
+
+  const checksumResponse = await fetch(checksumAsset.browser_download_url);
+  if (!checksumResponse.ok) {
+    throw new Error(`Failed to download checksums: ${checksumResponse.statusText}`);
+  }
+  const expected = parseChecksums(await checksumResponse.text()).get(binaryName);
+  if (!expected) {
+    throw new Error(`checksums.txt has no entry for ${binaryName}`);
+  }
+
   // Download binary
   const response = await fetch(asset.browser_download_url);
 
@@ -149,36 +222,57 @@ export async function performUpdate(): Promise<void> {
     throw new Error(`Failed to download: ${response.statusText}`);
   }
 
-  const buffer = await response.arrayBuffer();
-  const tmpPath = join(tmpdir(), `slackcli-update-${Date.now()}`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
 
-  // Write to temp file
-  await writeFile(tmpPath, new Uint8Array(buffer));
-  await chmod(tmpPath, 0o755);
+  const actual = sha256Hex(bytes);
+  if (actual !== expected) {
+    throw new Error(
+      `Checksum mismatch for ${binaryName}: expected ${expected}, got ${actual}. ` +
+      'The download may be corrupted or tampered with — not installing.'
+    );
+  }
 
   // Get current binary path
   const currentBinary = process.execPath;
 
+  // Stage the verified binary NEXT TO the one it replaces, not in tmpdir:
+  // rename() across filesystems throws EXDEV (/tmp is commonly a separate
+  // mount), and a same-directory rename is atomic on POSIX.
+  const stagingPath = `${currentBinary}.update-${process.pid}`;
+  await writeFile(stagingPath, bytes, { mode: 0o755 });
+  await chmod(stagingPath, 0o755);
+
   info(`Installing update...`);
 
+  const backupPath = `${currentBinary}.backup`;
   try {
     // Backup current binary
-    const backupPath = `${currentBinary}.backup`;
     await rename(currentBinary, backupPath);
-
-    // Move new binary to current location
-    await rename(tmpPath, currentBinary);
-
-    // Remove backup
-    await unlink(backupPath);
-
-    success(`Updated to version ${latestVersion}`);
-    info('Please restart slackcli to use the new version');
   } catch (error: any) {
-    // Try to restore from backup if it exists
+    await unlink(stagingPath).catch(() => {});
     logError(`Update failed: ${error.message}`);
     throw error;
   }
+
+  try {
+    // Move new binary to current location
+    await rename(stagingPath, currentBinary);
+  } catch (error: any) {
+    // The old binary was already moved aside — put it back, or the user is
+    // left with no slackcli at all.
+    await rename(backupPath, currentBinary).catch(() => {
+      logError(`Could not restore the previous binary; it is at: ${backupPath}`);
+    });
+    await unlink(stagingPath).catch(() => {});
+    logError(`Update failed: ${error.message}`);
+    throw error;
+  }
+
+  // Remove backup
+  await unlink(backupPath).catch(() => {});
+
+  success(`Updated to version ${latestVersion}`);
+  info('Please restart slackcli to use the new version');
 }
 
 // Read cached update check result synchronously
