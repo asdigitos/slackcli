@@ -42,8 +42,9 @@ export function sanitizeForTerminal(value: string | null | undefined): string {
  * re-indented line by line, so an embedded newline cannot reach column 0
  * where the header rows live. `formatCanvasContent` renders a document body
  * and does NOT re-indent - it is exempt because a canvas legitimately is
- * multi-line prose, and it is framed by rules above and below so the reader
- * can see where CLI output resumes.
+ * multi-line prose. Rendering an untrusted document to a terminal is
+ * inherently ambiguous; the rules above and below bound it, but only
+ * unforgeably when colour is on (see the note there).
  */
 export function sanitizeInline(value: string | null | undefined): string {
   return sanitizeForTerminal(value).replace(/[\t\n]+/g, ' ');
@@ -462,8 +463,11 @@ export function formatCanvasContent(canvas: SlackCanvas, markdown: string): stri
 
   // The markdown body derives from canvas HTML authored by other workspace
   // members; sanitized like every other API-derived string.
-  // Closing rule matters: without it a forged line at the very end of the
-  // document is indistinguishable from CLI output resuming.
+  // Closing rule bounds the document, so a forged line at its end does not
+  // read as CLI output resuming. Note the limit: on a TTY chalk.dim wraps the
+  // rule in escapes a canvas cannot reproduce (ESC is stripped from the body),
+  // but when colour is off — piped, redirected, NO_COLOR — the rule is bare
+  // and a canvas containing 60 box-drawing characters renders identically.
   const rule = chalk.dim('─'.repeat(60));
   return `${header}\n${rule}\n\n${sanitizeForTerminal(markdown)}\n${rule}`;
 }

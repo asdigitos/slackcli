@@ -35,8 +35,12 @@ describe('childEnv', () => {
     // PATH/HOME and the display vars xclip and the browser depend on.
     expect(env.PATH).toBe(process.env.PATH);
     expect(env.HOME).toBe(process.env.HOME);
-    // Only the token vars are dropped.
-    expect(Object.keys(env).length).toBe(Object.keys(process.env).length - 1);
+    // Only the token vars are dropped — counted against the parent's own
+    // token vars, so a developer who exports SLACKCLI_XOXD does not fail this.
+    const parentTokenVars = Object.keys(process.env).filter((k) =>
+      ['SLACKCLI_TOKEN', 'SLACKCLI_XOXD', 'SLACKCLI_XOXC'].includes(k.toUpperCase())
+    ).length;
+    expect(Object.keys(env).length).toBe(Object.keys(process.env).length - parentTokenVars);
   });
 
   it('does not mutate the parent environment', () => {
