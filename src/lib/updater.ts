@@ -1,6 +1,6 @@
 import { writeFile, chmod, rename, unlink } from 'fs/promises';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
 import chalk from 'chalk';
@@ -193,6 +193,13 @@ export async function performUpdate(): Promise<void> {
   // Refusing to update without it means a release asset can never be swapped
   // in unverified — the downloaded bytes must match the digest published in
   // the same release.
+  //
+  // Scope, honestly: checksums.txt shares a trust root with the binary (same
+  // origin, same release, same redirect chain), so this catches corruption,
+  // truncation, and tampering with the binary asset alone — NOT a compromised
+  // release channel or CDN, which could serve a matching pair. Closing that
+  // needs a signature over checksums.txt verified against a key pinned in
+  // this binary (minisign/cosign). Worth doing; deliberately not claimed here.
   const checksumAsset = release.assets.find(a => a.name === 'checksums.txt');
   if (!checksumAsset) {
     throw new Error(
@@ -238,9 +245,26 @@ export async function performUpdate(): Promise<void> {
   // Stage the verified binary NEXT TO the one it replaces, not in tmpdir:
   // rename() across filesystems throws EXDEV (/tmp is commonly a separate
   // mount), and a same-directory rename is atomic on POSIX.
-  const stagingPath = `${currentBinary}.update-${process.pid}`;
-  await writeFile(stagingPath, bytes, { mode: 0o755 });
-  await chmod(stagingPath, 0o755);
+  //
+  // `wx` (O_CREAT|O_EXCL) is the security-relevant part: the staging path is
+  // predictable, and a plain write follows symlinks. In a group-writable
+  // install dir (/usr/local/bin, /opt) under `sudo slackcli update`, another
+  // local user could pre-plant this path as a symlink and have root write
+  // attacker-chosen bytes, mode 0755, wherever it points. O_EXCL fails on any
+  // existing path, symlink included. The random suffix additionally makes the
+  // name unguessable, so it cannot be pre-created in the first place.
+  const stagingPath = `${currentBinary}.update-${process.pid}-${randomBytes(6).toString('hex')}`;
+  try {
+    await writeFile(stagingPath, bytes, { mode: 0o755, flag: 'wx' });
+    // writeFile's mode is masked by the umask; chmod is not, so the staged
+    // binary ends up executable even under a restrictive umask.
+    await chmod(stagingPath, 0o755);
+  } catch (error: any) {
+    // Never leave a partial ~60MB file behind on a failed write.
+    await unlink(stagingPath).catch(() => {});
+    logError(`Update failed: ${error.message}`);
+    throw error;
+  }
 
   info(`Installing update...`);
 

@@ -3,6 +3,8 @@
  */
 
 import { spawn } from 'child_process';
+import { childEnv } from './child-env.ts';
+
 
 export interface ClipboardResult {
   success: boolean;
@@ -78,6 +80,7 @@ async function tryCommand(command: string, args: string[]): Promise<ClipboardRes
     let resolved = false;
     const proc = spawn(command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: childEnv(),
     });
 
     let stdout = '';

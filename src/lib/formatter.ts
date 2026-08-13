@@ -16,13 +16,49 @@ import type {
  *
  * Keeps \t and \n; strips the rest of C0 (including ESC and \r), DEL, and the
  * C1 range (0x80–0x9F), which some terminals accept as single-byte escape
- * introducers (e.g. CSI at 0x9B). JSON output does not need this —
- * JSON.stringify escapes control characters.
+ * introducers (e.g. CSI at 0x9B). Note this keeps \n: callers that render a
+ * value as a single list row must use sanitizeInline instead, or an embedded
+ * newline forges extra rows. JSON output is handled by escapeJsonControls -
+ * JSON.stringify escapes C0 but leaves DEL and C1 raw.
  */
 export function sanitizeForTerminal(value: string | null | undefined): string {
   if (!value) return '';
   // eslint-disable-next-line no-control-regex
   return value.replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, '');
+}
+
+/**
+ * Sanitize a value that is rendered as ONE line of a list.
+ *
+ * Stripping control characters is not sufficient where the layout is
+ * "one record per line": a plain newline is enough to synthesise extra rows
+ * that look exactly like real output - a forged `2. #admin-only (C999)` entry
+ * in a channel list, or a fake message attributed to another user. That is the
+ * same forgery the escape-stripping exists to prevent, reachable without any
+ * escape character, so single-line contexts must additionally fold newlines
+ * (and tabs, which let a value jump columns) into spaces.
+ *
+ * `formatMessage`'s body and `formatCanvasContent` are exempt: both are
+ * genuinely multi-line and re-indent every line they emit.
+ */
+export function sanitizeInline(value: string | null | undefined): string {
+  return sanitizeForTerminal(value).replace(/[\t\n]+/g, ' ');
+}
+
+/**
+ * Escape control characters that `JSON.stringify` leaves raw.
+ *
+ * JSON.stringify escapes C0, but emits DEL (U+007F) and the C1 range
+ * (U+0080-U+009F) as literal bytes. `--json` output is routinely read in the
+ * same terminal as the human-readable output, so without this a C1 CSI
+ * (U+009B) reaches the terminal through the JSON path - reintroducing exactly
+ * what sanitizeForTerminal removes from the formatted path.
+ */
+function escapeJsonControls(json: string): string {
+  // eslint-disable-next-line no-control-regex
+  return json.replace(/[\u007F-\u009F]/g, (ch) =>
+    `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`
+  );
 }
 
 // Serialise a value as JSON and write it to stdout.
@@ -40,7 +76,7 @@ export function sanitizeForTerminal(value: string | null | undefined): string {
 // after writeJson() — doing so truncates at 64 KiB and reintroduces #73.
 // Set process.exitCode and return instead.
 export function writeJson(value: unknown): void {
-  process.stdout.write(JSON.stringify(value, null, 2) + '\n');
+  process.stdout.write(escapeJsonControls(JSON.stringify(value, null, 2)) + '\n');
 }
 
 // Format timestamp to human-readable date
@@ -73,8 +109,8 @@ export function formatWorkspace(
     ? `\n  Profile: ${chalk.cyan(profileKey)}`
     : '';
 
-  return `${chalk.bold(sanitizeForTerminal(config.workspace_name))} ${defaultBadge}
-  ID: ${sanitizeForTerminal(config.workspace_id)}${profileLine}
+  return `${chalk.bold(sanitizeInline(config.workspace_name))} ${defaultBadge}
+  ID: ${sanitizeInline(config.workspace_id)}${profileLine}
   Auth: ${authType}`;
 }
 
@@ -103,9 +139,9 @@ export function formatChannelList(channels: SlackChannel[], users: Map<string, S
     output += chalk.cyan('\nPublic Channels:\n');
     publicChannels.forEach((ch, idx) => {
       const archived = ch.is_archived ? chalk.gray(' [archived]') : '';
-      output += `  ${idx + 1}. #${sanitizeForTerminal(ch.name)} ${chalk.dim(`(${ch.id})`)}${archived}\n`;
+      output += `  ${idx + 1}. #${sanitizeInline(ch.name)} ${chalk.dim(`(${ch.id})`)}${archived}\n`;
       if (ch.topic?.value) {
-        output += `     ${chalk.dim(sanitizeForTerminal(ch.topic.value))}\n`;
+        output += `     ${chalk.dim(sanitizeInline(ch.topic.value))}\n`;
       }
     });
   }
@@ -114,14 +150,14 @@ export function formatChannelList(channels: SlackChannel[], users: Map<string, S
     output += chalk.yellow('\nPrivate Channels:\n');
     privateChannels.forEach((ch, idx) => {
       const archived = ch.is_archived ? chalk.gray(' [archived]') : '';
-      output += `  ${idx + 1}. 🔒 ${sanitizeForTerminal(ch.name)} ${chalk.dim(`(${ch.id})`)}${archived}\n`;
+      output += `  ${idx + 1}. 🔒 ${sanitizeInline(ch.name)} ${chalk.dim(`(${ch.id})`)}${archived}\n`;
     });
   }
 
   if (groupMessages.length > 0) {
     output += chalk.magenta('\nGroup Messages:\n');
     groupMessages.forEach((ch, idx) => {
-      output += `  ${idx + 1}. 👥 ${sanitizeForTerminal(ch.name) || 'Group'} ${chalk.dim(`(${ch.id})`)}\n`;
+      output += `  ${idx + 1}. 👥 ${sanitizeInline(ch.name) || 'Group'} ${chalk.dim(`(${ch.id})`)}\n`;
     });
   }
 
@@ -129,7 +165,7 @@ export function formatChannelList(channels: SlackChannel[], users: Map<string, S
     output += chalk.blue('\nDirect Messages:\n');
     directMessages.forEach((ch, idx) => {
       const user = ch.user ? users.get(ch.user) : null;
-      const userName = sanitizeForTerminal(user?.real_name || user?.name) || 'Unknown User';
+      const userName = sanitizeInline(user?.real_name || user?.name) || 'Unknown User';
       output += `  ${idx + 1}. 👤 @${userName} ${chalk.dim(`(${ch.id})`)}\n`;
     });
   }
@@ -146,7 +182,7 @@ export function formatMessage(
   const indentStr = ' '.repeat(indent);
   const user = msg.user ? users.get(msg.user) : null;
   const userName =
-    sanitizeForTerminal(user?.real_name || user?.name || msg.bot_id) || 'Unknown';
+    sanitizeInline(user?.real_name || user?.name || msg.bot_id) || 'Unknown';
   const timestamp = formatTimestamp(msg.ts);
   const isThread = msg.thread_ts && msg.thread_ts !== msg.ts;
   const threadIndicator = isThread ? chalk.dim(' (in thread)') : '';
@@ -179,17 +215,17 @@ export function formatMessage(
         return;
       }
 
-      const name = sanitizeForTerminal(file.name) || '(unnamed file)';
+      const name = sanitizeInline(file.name) || '(unnamed file)';
       const parts: string[] = [];
       if (file.size !== undefined) parts.push(formatFileSize(file.size));
-      if (file.mimetype) parts.push(sanitizeForTerminal(file.mimetype));
+      if (file.mimetype) parts.push(sanitizeInline(file.mimetype));
       const meta = parts.length > 0 ? ` ${chalk.dim(`(${parts.join(', ')})`)}` : '';
 
       output += `${indentStr}  ${chalk.yellow('📎')} ${chalk.yellow(name)}${meta}\n`;
 
       const url = file.url_private || file.permalink;
       if (url) {
-        output += `${indentStr}     ${chalk.dim(sanitizeForTerminal(url))}\n`;
+        output += `${indentStr}     ${chalk.dim(sanitizeInline(url))}\n`;
       }
     });
   }
@@ -197,7 +233,7 @@ export function formatMessage(
   // Reactions
   if (msg.reactions && msg.reactions.length > 0) {
     const reactionsStr = msg.reactions
-      .map(r => `${sanitizeForTerminal(r.name)} ${r.count}`)
+      .map(r => `${sanitizeInline(r.name)} ${r.count}`)
       .join('  ');
     output += `${indentStr}  ${chalk.dim(reactionsStr)}\n`;
   }
@@ -216,7 +252,7 @@ export function formatConversationHistory(
   messages: SlackMessage[],
   users: Map<string, SlackUser>
 ): string {
-  let output = chalk.bold(`💬 #${sanitizeForTerminal(channelName)} (${messages.length} messages)\n\n`);
+  let output = chalk.bold(`💬 #${sanitizeInline(channelName)} (${messages.length} messages)\n\n`);
 
   messages.forEach((msg, idx) => {
     output += formatMessage(msg, users);
@@ -228,27 +264,31 @@ export function formatConversationHistory(
   return output;
 }
 
-// Success message
+// Status helpers.
+//
+// All four sanitize centrally: their arguments routinely embed a Slack API
+// error string (`err.message` ultimately carries a server-supplied `error`
+// field) or an echoed channel/user name, so a control character in either
+// would otherwise reach the terminal through the one path every command
+// funnels its failures into. Newlines are preserved - these are standalone
+// lines, not list rows.
 export function success(message: string): void {
-  console.log(chalk.green('✅'), message);
+  console.log(chalk.green('✅'), sanitizeForTerminal(message));
 }
 
-// Error message
 export function error(message: string, hint?: string): void {
-  console.error(chalk.red('❌ Error:'), message);
+  console.error(chalk.red('❌ Error:'), sanitizeForTerminal(message));
   if (hint) {
-    console.error(chalk.dim(`   ${hint}`));
+    console.error(chalk.dim(`   ${sanitizeForTerminal(hint)}`));
   }
 }
 
-// Info message
 export function info(message: string): void {
-  console.log(chalk.blue('ℹ️'), message);
+  console.log(chalk.blue('ℹ️'), sanitizeForTerminal(message));
 }
 
-// Warning message
 export function warning(message: string): void {
-  console.log(chalk.yellow('⚠️'), message);
+  console.log(chalk.yellow('⚠️'), sanitizeForTerminal(message));
 }
 
 // Format saved items list
@@ -260,21 +300,21 @@ export function formatSavedItems(items: SavedItem[], users: Map<string, SlackUse
       const msg = item.message;
       const user = msg.user ? users.get(msg.user) : null;
       const userName =
-        sanitizeForTerminal(user?.real_name || user?.name || msg.bot_id) || 'Unknown';
+        sanitizeInline(user?.real_name || user?.name || msg.bot_id) || 'Unknown';
       const timestamp = formatTimestamp(msg.ts);
-      const channel = sanitizeForTerminal(item.channel_name || item.channel_id);
-      const text = truncateText(sanitizeForTerminal(msg.text), 120);
+      const channel = sanitizeInline(item.channel_name || item.channel_id);
+      const text = truncateText(sanitizeInline(msg.text), 120);
       const state = item.todo_state
-        ? chalk.dim(` [${sanitizeForTerminal(item.todo_state)}]`)
+        ? chalk.dim(` [${sanitizeInline(item.todo_state)}]`)
         : '';
 
       output += `  ${chalk.dim(`${idx + 1}.`)} ${chalk.bold(`@${userName}`)} in ${chalk.cyan(`#${channel}`)} ${chalk.dim(`[${timestamp}]`)}${state}\n`;
       output += `     ${text}\n`;
       output += `     ${chalk.dim(`channel: ${item.channel_id}  ts: ${msg.ts}`)}\n\n`;
     } else if (item.type === 'file' && item.file) {
-      output += `  ${chalk.dim(`${idx + 1}.`)} ${chalk.yellow('File:')} ${chalk.bold(sanitizeForTerminal(item.file.name || item.file.title) || 'Untitled')}\n\n`;
+      output += `  ${chalk.dim(`${idx + 1}.`)} ${chalk.yellow('File:')} ${chalk.bold(sanitizeInline(item.file.name || item.file.title) || 'Untitled')}\n\n`;
     } else {
-      output += `  ${chalk.dim(`${idx + 1}.`)} ${chalk.dim(`[${sanitizeForTerminal(item.type)}]`)}\n\n`;
+      output += `  ${chalk.dim(`${idx + 1}.`)} ${chalk.dim(`[${sanitizeInline(item.type)}]`)}\n\n`;
     }
   });
 
@@ -290,12 +330,12 @@ export function formatSearchMessages(
   let output = chalk.bold(`🔍 Search Results for "${query}" (${total} total)\n\n`);
 
   matches.forEach((match, idx) => {
-    const userName = sanitizeForTerminal(match.username || match.user) || 'Unknown';
+    const userName = sanitizeInline(match.username || match.user) || 'Unknown';
     const timestamp = formatTimestamp(match.ts);
     const channelName =
-      sanitizeForTerminal(match.channel?.name || match.channel?.id) || 'unknown';
-    const text = truncateText(sanitizeForTerminal(match.text), 150);
-    const permalink = sanitizeForTerminal(match.permalink);
+      sanitizeInline(match.channel?.name || match.channel?.id) || 'unknown';
+    const text = truncateText(sanitizeInline(match.text), 150);
+    const permalink = sanitizeInline(match.permalink);
 
     output += `  ${chalk.dim(`${idx + 1}.`)} ${chalk.bold(`@${userName}`)} in ${chalk.cyan(`#${channelName}`)} ${chalk.dim(`[${timestamp}]`)}\n`;
     output += `     ${text}\n`;
@@ -320,9 +360,9 @@ export function formatChannelSearchResults(
     const memberCount = ch.member_count || ch.num_members;
     const members = memberCount ? chalk.dim(`${memberCount} members`) : '';
     const isMember = ch.is_member ? chalk.green(' [joined]') : '';
-    output += `  ${chalk.dim(`${idx + 1}.`)} #${chalk.bold(sanitizeForTerminal(ch.name))} ${chalk.dim(`(${ch.id})`)} ${members}${isMember}\n`;
+    output += `  ${chalk.dim(`${idx + 1}.`)} #${chalk.bold(sanitizeInline(ch.name))} ${chalk.dim(`(${ch.id})`)} ${members}${isMember}\n`;
     if (ch.purpose?.value) {
-      output += `     ${chalk.dim(sanitizeForTerminal(ch.purpose.value))}\n`;
+      output += `     ${chalk.dim(sanitizeInline(ch.purpose.value))}\n`;
     }
     output += '\n';
   });
@@ -340,10 +380,10 @@ export function formatPeopleSearchResults(
 
   people.forEach((user, idx) => {
     const profile = user.profile || {};
-    const displayName = sanitizeForTerminal(profile.display_name || user.name);
-    const realName = sanitizeForTerminal(profile.real_name || user.real_name);
-    const email = profile.email ? chalk.dim(`<${sanitizeForTerminal(profile.email)}>`) : '';
-    const title = profile.title ? chalk.dim(`- ${sanitizeForTerminal(profile.title)}`) : '';
+    const displayName = sanitizeInline(profile.display_name || user.name);
+    const realName = sanitizeInline(profile.real_name || user.real_name);
+    const email = profile.email ? chalk.dim(`<${sanitizeInline(profile.email)}>`) : '';
+    const title = profile.title ? chalk.dim(`- ${sanitizeInline(profile.title)}`) : '';
 
     output += `  ${chalk.dim(`${idx + 1}.`)} ${chalk.bold(`@${displayName}`)} ${realName ? `(${realName})` : ''} ${chalk.dim(`(${user.id})`)} ${email}\n`;
     if (title) {
@@ -365,7 +405,7 @@ export function formatUnreadChannels(channels: UnreadChannel[]): string {
 
   channels.forEach((ch, idx) => {
     const prefix = ch.is_im ? '👤' : ch.is_mpim ? '👥' : ch.is_private ? '🔒' : '#';
-    const name = sanitizeForTerminal(ch.name || ch.id);
+    const name = sanitizeInline(ch.name || ch.id);
     const mentions = ch.mention_count > 0 ? chalk.red(` @${ch.mention_count}`) : '';
     const unreadCount = ch.unread_count ? chalk.yellow(` (${ch.unread_count} unread)`) : '';
 
@@ -389,7 +429,7 @@ export function formatCanvasList(canvases: SlackCanvas[]): string {
   let output = chalk.bold(`📄 Canvases (${canvases.length})\n\n`);
 
   canvases.forEach((canvas, idx) => {
-    const title = sanitizeForTerminal(canvas.title || canvas.name) || 'Untitled';
+    const title = sanitizeInline(canvas.title || canvas.name) || 'Untitled';
     const created = canvas.created ? formatTimestamp(String(canvas.created)) : '';
     const size = canvas.size ? chalk.dim(`${Math.round(canvas.size / 1024)}KB`) : '';
 
@@ -398,7 +438,7 @@ export function formatCanvasList(canvases: SlackCanvas[]): string {
       output += `     ${chalk.dim(created)}\n`;
     }
     if (canvas.permalink) {
-      output += `     ${chalk.dim(sanitizeForTerminal(canvas.permalink))}\n`;
+      output += `     ${chalk.dim(sanitizeInline(canvas.permalink))}\n`;
     }
     output += '\n';
   });
@@ -408,7 +448,7 @@ export function formatCanvasList(canvases: SlackCanvas[]): string {
 
 // Format canvas content for display
 export function formatCanvasContent(canvas: SlackCanvas, markdown: string): string {
-  const title = sanitizeForTerminal(canvas.title || canvas.name) || 'Untitled';
+  const title = sanitizeInline(canvas.title || canvas.name) || 'Untitled';
   const created = canvas.created ? formatTimestamp(String(canvas.created)) : '';
 
   let header = chalk.bold(`📄 ${title}`) + chalk.dim(` (${canvas.id})`);

@@ -16,6 +16,7 @@ import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import { chmod, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'fs/promises';
 import { join, delimiter } from 'path';
 import { homedir } from 'os';
+import { childEnv } from './child-env.ts';
 
 export type BrowserLaunchFailure =
   | 'browser_not_found'
@@ -317,7 +318,8 @@ export async function launchBrowser(
     // surviving a restart and silent re-login — the point of the persistent
     // profile — breaks. Helpers are reaped by profile match instead; see
     // `killProfileProcesses`.
-    child = spawn(executable, args, { stdio: 'ignore', detached: false });
+    // childEnv(): the browser must never inherit slackcli's token env vars.
+    child = spawn(executable, args, { stdio: 'ignore', detached: false, env: childEnv() });
   } catch (err: any) {
     return {
       ok: false,

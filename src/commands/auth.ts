@@ -8,7 +8,7 @@ import {
   clearAllWorkspaces,
   getDefaultWorkspaceId,
 } from '../lib/workspaces.ts';
-import { success, error, info, warning, formatWorkspace } from '../lib/formatter.ts';
+import { success, error, info, warning, formatWorkspace, sanitizeInline } from '../lib/formatter.ts';
 import chalk from 'chalk';
 import { parseCurlCommand, CurlParseError, looksLikeCurlCommand } from '../lib/curl-parser.ts';
 import { readClipboard } from '../lib/clipboard.ts';
@@ -26,7 +26,7 @@ export function createAuthCommand(): Command {
     .description(
       'Login with standard Slack app token (xoxb-* or xoxp-*). ' +
       'Prefer the SLACKCLI_TOKEN environment variable over --token: ' +
-      'command-line arguments are visible in `ps` and land in shell history.'
+      'command-line arguments are visible to any local user via `ps`.'
     )
     .option('--token <token>', 'Slack bot or user token; prefer SLACKCLI_TOKEN')
     .requiredOption('--workspace-name <name>', 'Workspace name for identification')
@@ -51,9 +51,9 @@ export function createAuthCommand(): Command {
         );
 
         spinner.succeed('Authentication successful!');
-        success(`Authenticated as workspace: ${config.workspace_name}`);
-        info(`Workspace ID: ${config.workspace_id}`);
-        info(`Profile: ${profileKey}`);
+        success(`Authenticated as workspace: ${sanitizeInline(config.workspace_name)}`);
+        info(`Workspace ID: ${sanitizeInline(config.workspace_id)}`);
+        info(`Profile: ${sanitizeInline(profileKey)}`);
         if (config.auth_type === 'standard') {
           info(`Token Type: ${config.token_type}`);
         }
@@ -70,7 +70,7 @@ export function createAuthCommand(): Command {
     .description(
       'Login with browser session tokens (xoxd-* and xoxc-*). ' +
       'Prefer the SLACKCLI_XOXD / SLACKCLI_XOXC environment variables over the ' +
-      'flags: command-line arguments are visible in `ps` and land in shell history.'
+      'flags: command-line arguments are visible to any local user via `ps`.'
     )
     .option('--xoxd <token>', 'Browser session token (xoxd-*); prefer SLACKCLI_XOXD')
     .option('--xoxc <token>', 'Browser API token (xoxc-*); prefer SLACKCLI_XOXC')
@@ -100,11 +100,11 @@ export function createAuthCommand(): Command {
         );
 
         spinner.succeed('Authentication successful!');
-        success(`Authenticated as workspace: ${config.workspace_name}`);
-        info(`Workspace ID: ${config.workspace_id}`);
-        info(`Profile: ${profileKey}`);
+        success(`Authenticated as workspace: ${sanitizeInline(config.workspace_name)}`);
+        info(`Workspace ID: ${sanitizeInline(config.workspace_id)}`);
+        info(`Profile: ${sanitizeInline(profileKey)}`);
         if (config.auth_type === 'browser') {
-          info(`Workspace URL: ${config.workspace_url}`);
+          info(`Workspace URL: ${sanitizeInline(config.workspace_url)}`);
         }
       } catch (err: any) {
         spinner.fail('Authentication failed');
@@ -154,7 +154,7 @@ export function createAuthCommand(): Command {
 
         if (result.saved.length === 0) {
           spinner.fail('No workspaces could be authenticated');
-          result.failed.forEach((f) => error(`${f.workspaceUrl}: ${f.error}`));
+          result.failed.forEach((f) => error(`${sanitizeInline(f.workspaceUrl)}: ${sanitizeInline(f.error)}`));
           process.exit(1);
         }
 
@@ -163,13 +163,13 @@ export function createAuthCommand(): Command {
         );
 
         result.saved.forEach((config) => {
-          success(`${config.workspace_name} ${chalk.dim(`(${config.workspace_id})`)}`);
+          success(`${sanitizeInline(config.workspace_name)} ${chalk.dim(`(${sanitizeInline(config.workspace_id)})`)}`);
         });
 
         // Partial success is still success — surface the misses without
         // discarding the workspaces that did authenticate.
         result.failed.forEach((f) => {
-          warning(`Skipped ${f.workspaceUrl}: ${f.error}`);
+          warning(`Skipped ${sanitizeInline(f.workspaceUrl)}: ${sanitizeInline(f.error)}`);
         });
       } catch (err: any) {
         spinner.fail('Automatic login failed');
@@ -292,7 +292,7 @@ export function createAuthCommand(): Command {
       console.log('   - xoxd token: In the "Cookie" header, look for d=xoxd-...');
       console.log('   - xoxc token: In the request payload, look for "token":"xoxc-..."');
       console.log('\n✨ Use the tokens (via environment variables — tokens passed as');
-      console.log('   --flags are visible in `ps` and land in your shell history):');
+      console.log('   --flags are visible to any local user via `ps`):');
       console.log('   SLACKCLI_XOXD=xoxd-... SLACKCLI_XOXC=xoxc-... \\');
       console.log('     slackcli auth login-browser --workspace-url=https://yourteam.slack.com\n');
       console.log('\n💡 Or skip manual extraction entirely:');
@@ -313,6 +313,15 @@ export function createAuthCommand(): Command {
     .action(async (curlCommand, options) => {
       try {
         let curlInput = curlCommand;
+
+        // A DevTools cURL string carries BOTH the xoxd cookie and the xoxc
+        // token, so passing it as an argument exposes them in `ps` and shell
+        // history — the exposure the env-var flags above exist to avoid.
+        // Still accepted for compatibility, but never silently.
+        if (curlInput) {
+          warning('Passing the cURL command as an argument puts your tokens in `ps` output and shell history.');
+          console.log(chalk.dim('   Prefer: slackcli auth parse-curl --login   (interactive, or pipe it on stdin)'));
+        }
 
         // Get input from various sources (in priority order)
         if (!curlInput && options.fromClipboard) {
@@ -370,8 +379,8 @@ export function createAuthCommand(): Command {
         // Display extracted tokens
         success('✅ Successfully extracted tokens!\n');
         console.log(chalk.bold('Workspace:'));
-        console.log(`  Name: ${chalk.cyan(parsed.workspaceName)}`);
-        console.log(`  URL:  ${chalk.cyan(parsed.workspaceUrl)}\n`);
+        console.log(`  Name: ${chalk.cyan(sanitizeInline(parsed.workspaceName))}`);
+        console.log(`  URL:  ${chalk.cyan(sanitizeInline(parsed.workspaceUrl))}\n`);
 
         console.log(chalk.bold('Tokens:'));
         console.log(`  xoxd: ${chalk.green(parsed.xoxd.substring(0, 20))}...${chalk.gray(`(${parsed.xoxd.length} chars)`)}`);
@@ -383,9 +392,9 @@ export function createAuthCommand(): Command {
           try {
             const { config, profileKey } = await authenticateBrowser(parsed.xoxd, parsed.xoxc, parsed.workspaceUrl, parsed.workspaceName);
             spinner.succeed('Authentication successful!');
-            success(`Authenticated as workspace: ${config.workspace_name}`);
-            info(`Workspace ID: ${config.workspace_id}`);
-            info(`Profile: ${profileKey}`);
+            success(`Authenticated as workspace: ${sanitizeInline(config.workspace_name)}`);
+            info(`Workspace ID: ${sanitizeInline(config.workspace_id)}`);
+            info(`Profile: ${sanitizeInline(profileKey)}`);
           } catch (err: any) {
             spinner.fail('Authentication failed');
             error(err.message);
