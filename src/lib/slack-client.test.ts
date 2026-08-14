@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SlackClient } from './slack-client.ts';
+import { SlackClient, isSlackHostedUrl } from './slack-client.ts';
 
 class TestSlackClient extends SlackClient {
   public readonly calls: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -115,6 +115,119 @@ describe('SlackClient.uploadFileExternal', () => {
     ).rejects.toThrow('File not found: /tmp/slackcli-missing-file.txt');
 
     expect(client.calls).toEqual([]);
+  });
+});
+
+describe('isSlackHostedUrl', () => {
+  it('accepts https slack.com hosts', () => {
+    expect(isSlackHostedUrl('https://files.slack.com/files-pri/T1/x')).toBe(true);
+    expect(isSlackHostedUrl('https://slack.com/x')).toBe(true);
+    expect(isSlackHostedUrl('https://app.slack.com/x')).toBe(true);
+    expect(isSlackHostedUrl('https://foo.enterprise.slack.com/x')).toBe(true);
+  });
+
+  it('rejects non-slack hosts, http, and lookalikes', () => {
+    expect(isSlackHostedUrl('https://evil.example/x')).toBe(false);
+    expect(isSlackHostedUrl('http://files.slack.com/x')).toBe(false); // not https
+    expect(isSlackHostedUrl('https://notslack.com/x')).toBe(false);
+    expect(isSlackHostedUrl('https://slack.com.evil.net/x')).toBe(false);
+    expect(isSlackHostedUrl('not a url')).toBe(false);
+  });
+});
+
+describe('SlackClient.downloadFile', () => {
+  it('refuses to attach credentials to a non-Slack host', async () => {
+    let fetched = false;
+    globalThis.fetch = (async (_input, _init) => {
+      fetched = true;
+      return new Response('', { status: 200 });
+    }) as typeof fetch;
+
+    const client = new TestSlackClient();
+
+    await expect(
+      client.downloadFile('https://evil.example/steal'),
+    ).rejects.toThrow('Refusing to send credentials to a non-Slack host');
+    // The guard must run before any network call is made.
+    expect(fetched).toBe(false);
+  });
+
+  it('sends the d cookie to a slack.com host', async () => {
+    let seenCookie: string | undefined;
+    globalThis.fetch = (async (_input, init) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      seenCookie = headers?.['Cookie'];
+      return new Response('canvas html', { status: 200 });
+    }) as typeof fetch;
+
+    const client = new TestSlackClient();
+    const body = await client.downloadFile('https://files.slack.com/files-pri/T1/canvas.html');
+
+    expect(body).toBe('canvas html');
+    expect(seenCookie).toBe('d=xoxd-test');
+  });
+
+  it('re-validates every redirect hop and refuses an off-Slack redirect', async () => {
+    const requested: string[] = [];
+    globalThis.fetch = (async (input, _init) => {
+      const url = String(input);
+      requested.push(url);
+      if (url === 'https://files.slack.com/start') {
+        return new Response('', {
+          status: 302,
+          headers: { location: 'https://evil.example/exfil' },
+        });
+      }
+      return new Response('should never get here', { status: 200 });
+    }) as typeof fetch;
+
+    const client = new TestSlackClient();
+
+    await expect(
+      client.downloadFile('https://files.slack.com/start'),
+    ).rejects.toThrow('Refusing to send credentials to a non-Slack host');
+    // The off-Slack hop must never be fetched at all.
+    expect(requested).toEqual(['https://files.slack.com/start']);
+  });
+
+  it('follows a same-Slack redirect (including a relative Location)', async () => {
+    const requested: string[] = [];
+    globalThis.fetch = (async (input, _init) => {
+      const url = String(input);
+      requested.push(url);
+      if (url === 'https://files.slack.com/start') {
+        return new Response('', { status: 302, headers: { location: '/moved' } });
+      }
+      if (url === 'https://files.slack.com/moved') {
+        return new Response('', {
+          status: 302,
+          headers: { location: 'https://myteam.slack.com/final' },
+        });
+      }
+      return new Response('file body', { status: 200 });
+    }) as typeof fetch;
+
+    const client = new TestSlackClient();
+    const body = await client.downloadFile('https://files.slack.com/start');
+
+    expect(body).toBe('file body');
+    expect(requested).toEqual([
+      'https://files.slack.com/start',
+      'https://files.slack.com/moved',
+      'https://myteam.slack.com/final',
+    ]);
+  });
+
+  it('gives up after too many redirects', async () => {
+    globalThis.fetch = (async (_input, _init) =>
+      new Response('', { status: 302, headers: { location: '/loop' } })
+    ) as typeof fetch;
+
+    const client = new TestSlackClient();
+
+    await expect(
+      client.downloadFile('https://files.slack.com/loop'),
+    ).rejects.toThrow('too many redirects');
   });
 });
 
